@@ -6,10 +6,10 @@ return [
     'unknownsources'      => true,
     // 启用或禁用插件时是否备份将被覆盖的全局文件
     'backup_global_files' => true,
-    // 是否启用纯净模式，同步插件文件到系统目录
+    // 插件纯净模式，插件启用后是否删除插件目录的application、public和assets文件夹
     'addon_pure_mode'     => true,
     // 是否启用插件授权校验
     'addon_auth_check'    => false,
-    // 插件市场接口地址，留空时回退到旧的 rocket.api_url
+    // 插件市场接口地址
     'api_url'             => null,
 ];

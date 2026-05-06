@@ -30,11 +30,7 @@ class Service
     public static function addonConfig($key, $default = null)
     {
         $value = config('easyaddons.' . $key);
-        if (!is_null($value)) {
-            return $value;
-        }
 
-        $value = config('rocket.' . $key);
         return is_null($value) ? $default : $value;
     }
 
