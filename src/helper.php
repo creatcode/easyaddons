@@ -42,7 +42,11 @@ if (!function_exists('hook')) {
     {
         $result = Event::trigger($event, $params, $once);
 
-        return join('', $result);
+        if ($once) {
+            return $result;
+        }
+
+        return is_array($result) ? implode('', $result) : $result;
     }
 }
 
@@ -464,15 +468,27 @@ if (!function_exists('set_addon_info')) {
         if (!isset($array['name']) || !isset($array['title']) || !isset($array['version'])) {
             throw new Exception('插件配置写入失败');
         }
+        $formatValue = function ($value) {
+            if (is_bool($value)) {
+                return $value ? 'true' : 'false';
+            }
+
+            if (is_numeric($value)) {
+                return $value;
+            }
+
+            return '"' . addcslashes((string) $value, "\\\"") . '"';
+        };
+
         $res = [];
         foreach ($array as $key => $val) {
             if (is_array($val)) {
                 $res[] = "[$key]";
                 foreach ($val as $skey => $sval) {
-                    $res[] = "$skey = " . (is_numeric($sval) ? $sval : $sval);
+                    $res[] = "$skey = " . $formatValue($sval);
                 }
             } else {
-                $res[] = "$key = " . (is_numeric($val) ? $val : $val);
+                $res[] = "$key = " . $formatValue($val);
             }
         }
         if ($handle = fopen($file, 'w')) {

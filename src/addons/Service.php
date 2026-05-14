@@ -410,7 +410,7 @@ class Service
                     try {
                         Db::getPdo()->exec($templine);
                     } catch (\PDOException | \Error $e) {
-                        //$e->getMessage();
+                        throw new Exception('SQL导入失败：' . $e->getMessage());
                     }
                     $templine = '';
                 }
