@@ -465,9 +465,11 @@ if (!function_exists('set_addon_info')) {
         $file = ADDON_PATH . $name . DIRECTORY_SEPARATOR . 'info.ini';
         $addon = get_addon_instance($name);
         $array = $addon->setInfo($name, $array);
+
         if (!isset($array['name']) || !isset($array['title']) || !isset($array['version'])) {
             throw new Exception('插件配置写入失败');
         }
+
         $formatValue = function ($value) {
             if (is_bool($value)) {
                 return $value ? 'true' : 'false';
@@ -491,10 +493,12 @@ if (!function_exists('set_addon_info')) {
                 $res[] = "$key = " . $formatValue($val);
             }
         }
+
         if ($handle = fopen($file, 'w')) {
             fwrite($handle, implode("\n", $res) . "\n");
             fclose($handle);
-            //清空当前配置缓存
+
+            // 清空当前配置缓存
             Config::set([$name => null], 'addoninfo');
         } else {
             throw new Exception('文件没有写入权限');
