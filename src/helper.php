@@ -180,7 +180,11 @@ if (!function_exists('get_addon_autoload_config')) {
             }
 
             // 读取出所有公共方法
-            $methods = (array) get_class_methods('\\addons\\' . $name . '\\' . ucfirst($name));
+            $addonClass = '\\addons\\' . $name . '\\' . ucfirst($name);
+            if (!class_exists($addonClass)) {
+                continue;
+            }
+            $methods = (array)get_class_methods($addonClass);
             // 跟插件基类方法做比对，得到差异结果
             $hooks = array_diff($methods, $base);
             // 循环将钩子方法写入配置中

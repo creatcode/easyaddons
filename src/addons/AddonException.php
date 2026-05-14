@@ -13,8 +13,8 @@ class AddonException extends Exception
 
     public function __construct($message, $code = 0, $data = '')
     {
-        $this->message  = $message;
-        $this->code     = $code;
-        $this->data     = $data;
+        parent::__construct((string)$message, (int)$code);
+
+        $this->data = is_array($data) ? $data : ['data' => $data];
     }
 }

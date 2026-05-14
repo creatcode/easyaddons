@@ -58,7 +58,7 @@ abstract class Addons
             $name = $this->getName();
         }
         if (!$force) {
-            $info = Config::get($name, $this->infoRange);
+            $info = Config::get($this->infoRange . '.' . $name);
             if ($info) {
                 return $info;
             }
@@ -87,7 +87,7 @@ abstract class Addons
             $name = $this->getName();
         }
         if (!$force) {
-            $config = Config::get($name, $this->configRange);
+            $config = Config::get($this->configRange . '.' . $name);
             if ($config) {
                 return $config;
             }

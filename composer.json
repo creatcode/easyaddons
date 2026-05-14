@@ -1,15 +1,17 @@
 {
     "name": "creatcode/easyaddons",
-    "description": "TP6+FastAdmin风格项目的专用插件包",
+    "description": "适用于tp6+的项目的专用插件包",
     "license": "Apache-2.0",
     "keywords": [
         "thinkphp6",
         "thinkphp8",
         "addons",
+        "fastadmin",
+        "rocketadmin",
         "project-package"
     ],
     "require": {
-        "php": ">=7.1.0",
+        "php": ">=7.2.0",
         "topthink/framework": "^6.1|^7.0|^8.0",
         "guzzlehttp/guzzle": "^7.0",
         "symfony/var-exporter": "^5.4|^6.0|^7.0",

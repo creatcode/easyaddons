@@ -271,18 +271,9 @@ abstract class BaseAddonCommand extends Command
                 }
                 foreach ($paths as $oldPath => $newPath) {
                     if (is_dir($oldPath)) {
-                        if ($force) {
-                            if (is_dir($newPath)) {
-                                $list = scandir($newPath);
-                                foreach ($list as $_v) {
-                                    if (!in_array($_v, ['.', '..'])) {
-                                        $file = $newPath . DIRECTORY_SEPARATOR . $_v;
-                                        @chmod($file, 0777);
-                                        @unlink($file);
-                                    }
-                                }
-                                @rmdir($newPath);
-                            }
+                        if ($force && is_dir($newPath)) {
+                            // 强制模式下先清理旧的插件目标目录
+                            rmdirs($newPath);
                         }
                         copydirs($oldPath, $newPath);
                     }
@@ -353,7 +344,7 @@ abstract class BaseAddonCommand extends Command
         $content = str_replace($search, $replace, $stub);
 
         if (!is_dir(dirname($pathname))) {
-            mkdir(strtolower(dirname($pathname)), 0755, true);
+            mkdir(dirname($pathname), 0755, true);
         }
         return file_put_contents($pathname, $content);
     }

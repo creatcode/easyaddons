@@ -10,6 +10,6 @@ return [
     'addon_pure_mode'     => true,
     // 是否启用插件授权校验
     'addon_auth_check'    => false,
-    // 插件市场接口地址
-    'api_url'             => null,
+    // 是否校验插件市场 HTTPS 证书
+    'ssl_verify' => true,
 ];

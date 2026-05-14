@@ -45,6 +45,20 @@ class Service
         $value = config('rocket.version');
         return is_null($value) ? $default : (string)$value;
     }
+
+    /**
+     * 获取项目插件市场接口地址
+     *
+     * @param string $default
+     * @return string
+     */
+    public static function marketApiUrl($default = '')
+    {
+        $value = config('rocket.addon_market_api_url');
+
+        return is_null($value) ? $default : trim((string)$value);
+    }
+
     /**
      * 插件列表
      */
@@ -116,11 +130,15 @@ class Service
             throw new Exception("Addon package download failed");
         }
 
-        if ($write = fopen($tmpFile, 'w')) {
-            fwrite($write, $content);
+        if (($write = fopen($tmpFile, 'wb')) !== false) {
+            if (fwrite($write, $content) === false) {
+                fclose($write);
+                throw new Exception("No permission to write temporary files");
+            }
             fclose($write);
             return $tmpFile;
         }
+
         throw new Exception("No permission to write temporary files");
     }
 
@@ -441,7 +459,12 @@ EOD;
             return true;
         }
 
-        if (!is_really_writable($file)) {
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        if ((is_file($file) && !is_really_writable($file)) || (!is_file($file) && !is_really_writable($dir))) {
             throw new Exception(__("Unable to open file '%s' for writing", "addons.php"));
         }
 
@@ -608,8 +631,12 @@ EOD;
             if ($conflictFiles) {
                 $zip = new ZipFile();
                 try {
-                    foreach ($conflictFiles as $k => $v) {
-                        $zip->addFile(app()->getRootPath() . $k, $v);
+                    foreach ($conflictFiles as $v) {
+                        // 备份被插件覆盖的原始全局文件
+                        $sourceFile = app()->getRootPath() . $v;
+                        if (is_file($sourceFile)) {
+                            $zip->addFile($sourceFile, $v);
+                        }
                     }
                     $addonsBackupDir = self::getAddonsBackupDir();
                     $zip->saveAsFile($addonsBackupDir . $name . "-conflict-enable-" . date("YmdHis") . ".zip");
@@ -691,7 +718,12 @@ EOD;
         }
 
         $file = self::getExtraAddonsFile();
-        if (!is_really_writable($file)) {
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        if ((is_file($file) && !is_really_writable($file)) || (!is_file($file) && !is_really_writable($dir))) {
             throw new Exception(__("Unable to open file '%s' for writing", "addons.php"));
         }
 
@@ -861,7 +893,6 @@ EOD;
         // 执行升级脚本
         try {
             $addonName = ucfirst($name);
-            //创建临时类用于调用升级的方法
             $sourceFile = $addonDir . $addonName . ".php";
             $destFile = $addonDir . $addonName . "Upgrade.php";
 
@@ -870,34 +901,37 @@ EOD;
             if ($classContent === false || strpos($classContent, $search) === false) {
                 throw new Exception('Unable to build upgrade class');
             }
+
             $classContent = str_replace($search, "class {$addonName}Upgrade extends", $classContent);
-
-
-            //创建临时的类文件
-            file_put_contents($destFile, $classContent);
+            if (file_put_contents($destFile, $classContent, LOCK_EX) === false) {
+                throw new Exception('No permission to write temporary files');
+            }
 
             $className = "\\addons\\" . $name . "\\" . $addonName . "Upgrade";
-            $addon = new $className($name);
+            $addon = new $className();
 
-            //调用升级的方法
             if (method_exists($addon, "upgrade")) {
                 $addon->upgrade();
             }
-
-            //移除临时文件
-            @unlink($destFile);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             throw new Exception($e->getMessage());
+        } finally {
+            if (isset($destFile) && is_file($destFile)) {
+                @unlink($destFile);
+            }
         }
 
-        // 刷新
+        // 刷新插件缓存
         self::refresh();
 
-        //必须变更版本号
+        // 升级成功后写回插件版本
         $info['version'] = $extend['version'] ?? $info['version'];
+        unset($info['url']);
+        set_addon_info($name, $info);
 
         $info['config'] = get_addon_config($name) ? 1 : 0;
         $info['bootstrap'] = is_file(self::getBootstrapFile($name));
+        $info['testdata'] = is_file(self::getTestdataFile($name));
         return $info;
     }
 
@@ -1117,7 +1151,12 @@ EOD;
      */
     public static function getRootDomain($domain)
     {
-        $host = strtolower(trim($domain));
+        $host = strtolower(trim((string) $domain));
+        $host = preg_replace('/:\d+$/', '', $host);
+
+        if ($host === '' || $host === 'localhost' || filter_var($host, FILTER_VALIDATE_IP)) {
+            return $host;
+        }
         $hostArr = explode('.', $host);
         $hostCount = count($hostArr);
         $cnRegex = '/\w+\.(gov|org|ac|mil|net|edu|com|bj|tj|sh|cq|he|sx|nm|ln|jl|hl|js|zj|ah|fj|jx|sd|ha|hb|hn|gd|gx|hi|sc|gz|yn|xz|sn|gs|qh|nx|xj|tw|hk|mo)\.cn$/i';
@@ -1210,7 +1249,12 @@ EOD;
      */
     protected static function getServerUrl()
     {
-        return rtrim((string)self::addonConfig('api_url', ''), '/') . '/';
+        $apiUrl = self::marketApiUrl();
+        if ($apiUrl === '') {
+            throw new Exception(__('Addon market api url is not configured'));
+        }
+
+        return rtrim($apiUrl, '/') . '/';
     }
 
     /**
@@ -1235,7 +1279,7 @@ EOD;
             'base_uri'        => self::getServerUrl(),
             'timeout'         => 30,
             'connect_timeout' => 30,
-            'verify'          => false,
+            'verify'          => self::addonConfig('ssl_verify', false),
             'http_errors'     => false,
             'headers'         => [
                 'X-REQUESTED-WITH' => 'XMLHttpRequest',
@@ -1265,10 +1309,16 @@ EOD;
             $response = $client->request($method, ltrim($url, '/'), $options);
             $body = $response->getBody();
             $content = $body->getContents();
-            $json = (array)json_decode($content, true);
+            $json = json_decode($content, true);
+
+            if (!is_array($json)) {
+                throw new Exception(__('Unknown data format'));
+            }
         } catch (TransferException $e) {
             throw new Exception(__('Network error'));
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
+            throw $e;
+        } catch (\Throwable $e) {
             throw new Exception(__('Unknown data format'));
         }
         return $json;

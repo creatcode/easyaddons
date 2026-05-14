@@ -2,10 +2,7 @@
 
 namespace creatcode\easyaddons\addons;
 
-use think\App;
-use think\facade\Lang;
 use think\facade\Event;
-use think\facade\Request;
 use think\exception\HttpException;
 
 class Route
@@ -16,9 +13,18 @@ class Route
         $convert = config('url_convert', true);
         $filter = $convert ? 'strtolower' : 'trim';
 
-        $addon = $addon ? trim(call_user_func($filter, $addon)) : '';
-        $controller = $controller ? trim(call_user_func($filter, $controller)) : 'index';
-        $action = $action ? trim(call_user_func($filter, $action)) : 'index';
+        $addon = $addon !== null && $addon !== '' ? trim(call_user_func($filter, (string)$addon)) : '';
+        $controller = $controller !== null && $controller !== '' ? trim(call_user_func($filter, (string)$controller)) : 'index';
+        $action = $action !== null && $action !== '' ? trim(call_user_func($filter, (string)$action)) : 'index';
+
+        if (
+            !preg_match('/^[a-zA-Z0-9]+$/', $addon) ||
+            !preg_match('/^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*$/', $controller) ||
+            !preg_match('/^[a-zA-Z][a-zA-Z0-9_]*$/', $action) ||
+            strpos($action, '__') === 0
+        ) {
+            throw new HttpException(404, __('addon route not found'));
+        }
 
         Event::trigger('addon_begin', $request);
 
@@ -56,7 +62,7 @@ class Route
             }
 
             Event::trigger('addon_action_begin', $call);
-            return call_user_func_array($call, $vars);
+            return app()->invokeMethod($call, $vars);
         }
 
         abort(500, lang('addon can not be empty'));

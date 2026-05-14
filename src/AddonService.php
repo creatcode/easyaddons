@@ -4,25 +4,25 @@ declare(strict_types=1);
 
 namespace creatcode\easyaddons;
 
-use app\common\middleware\CommonInit;
 use creatcode\easyaddons\addons\command\AddonCommand;
 use creatcode\easyaddons\addons\command\TenantAddonCommand;
 use think\facade\Cache;
 use think\facade\Config;
-use think\facade\Env;
 use think\facade\Event;
 use think\facade\Route;
 use think\helper\Str;
 
 /**
- * 插件服务类
+ * 插件服务注册类
+ *
+ * 负责初始化插件目录、注册插件事件、注册插件路由和插件管理命令。
  */
 class AddonService extends \think\Service
 {
     /**
-     * 注册服务
+     * 注册插件基础能力
      *
-     * @return mixed
+     * 该阶段只处理插件目录和事件监听，路由注册延迟到 RouteLoaded 阶段执行
      */
     public function register()
     {
@@ -32,80 +32,109 @@ class AddonService extends \think\Service
         if (!is_dir(ADDON_PATH)) {
             @mkdir(ADDON_PATH, 0755, true);
         }
-        //注册插件路由
-        $this->addon_route();
         //注册插件事件
         $this->addon_event();
     }
 
-    // 注册事件
+    /**
+     * 注册插件事件
+     */
     protected function addon_event()
     {
-        $hooks = Env::get('APP_DEBUG') ? [] : Cache::get('hooks', []);
+        $hooks = Config::get('app.app_debug') ? [] : Cache::get('hooks', []);
+
         if (empty($hooks)) {
             $hooks = (array) Config::get('addons.hooks');
-            // 初始化钩子
+
+            // 初始化插件钩子监听
             foreach ($hooks as $key => $values) {
-                $values = is_string($values) ? explode(',', $values) : (array)$values;
-                $hooks[$key] = array_values(array_filter(array_map(function ($v) use ($key) {
-                    $class = get_addon_class($v);
+                $values = is_string($values) ? explode(',', $values) : (array) $values;
+
+                $hooks[$key] = array_values(array_filter(array_map(function ($addon) use ($key) {
+                    $class = get_addon_class($addon);
+
                     return $class ? [$class, Str::camel($key)] : null;
                 }, $values)));
-
-                // $values = is_string($values) ? explode(',', $values) : (array)$values;
-                // $values = array_filter($values);
-                // $hooks[$key] = array_filter(array_map(function ($v) {
-                //     return get_addon_class($v);
-                // }, $values));
             }
+
             Cache::set('hooks', $hooks);
         }
-        //如果在插件中有定义app_init，则直接执行
-        if (isset($hooks['app_init'])) {
-            foreach ($hooks['app_init'] as $k => $v) {
-                Event::trigger('app_init', $v);
-            }
+
+        if (!$hooks) {
+            return;
         }
+
+        // 先注册监听，再按需触发初始化事件
         Event::listenEvents($hooks);
+
+        if (isset($hooks['app_init'])) {
+            Event::trigger('app_init', app());
+        }
+    }
+
+
+    /**
+     * 获取插件路由中间件
+     *
+     * 中间件类可能随项目结构或 ThinkPHP 版本变化，只注册当前环境真实存在的类。
+     */
+    private function addon_middlewares(): array
+    {
+        $middlewares = [
+            'app\\common\\middleware\\CommonInit',
+            'think\\middleware\\LoadLangPack',
+        ];
+
+        // 只注册真实存在的中间件
+        return array_values(array_filter($middlewares, 'class_exists'));
     }
 
     /**
-     * 注册插件路由.
+     * 注册插件路由
      */
     private function addon_route()
     {
-        Route::rule('addons/:addon/[:controller]/[:action]', '\\creatcode\\easyaddons\\addons\\Route::execute')
-            ->middleware([CommonInit::class, \think\middleware\LoadLangPack::class]);
-
-        //注册路由
-        $routeArr = (array) Config::get('addons.route');
         $execute = '\\creatcode\\easyaddons\\addons\\Route::execute';
+        $middlewares = $this->addon_middlewares();
+
+        Route::rule('addons/:addon/[:controller]/[:action]', $execute)
+            ->middleware($middlewares);
+
+        // 注册自定义插件路由
+        $routeArr = (array) Config::get('addons.route');
         foreach ($routeArr as $k => $v) {
             if (is_array($v)) {
                 if (empty($v['domain']) || empty($v['rule']) || !is_array($v['rule'])) {
                     continue;
                 }
+
                 $domain = $v['domain'];
                 $drules = [];
+
                 foreach ($v['rule'] as $m => $n) {
-                    $parts = explode('/', (string)$n);
+                    $parts = explode('/', (string) $n);
                     if (count($parts) !== 3) {
                         continue;
                     }
+
                     [$addon, $controller, $action] = $parts;
                     $drules[$m] = [
-                        'addon'    => $addon, 'controller' => $controller, 'action' => $action,
-                        'indomain' => 1,
+                        'addon'      => $addon,
+                        'controller' => $controller,
+                        'action'     => $action,
+                        'indomain'   => 1,
                     ];
                 }
+
                 if (!$drules) {
                     continue;
                 }
-                Route::domain($domain, function () use ($drules, $execute) {
-                    // 动态注册域名的路由规则
+
+                Route::domain($domain, function () use ($drules, $execute, $middlewares) {
+                    // 动态注册域名路由规则
                     foreach ($drules as $k => $rule) {
                         Route::rule($k, $execute)
-                            ->middleware([CommonInit::class, \think\middleware\LoadLangPack::class])
+                            ->middleware($middlewares)
                             ->name($k)
                             ->completeMatch(true)
                             ->append($rule);
@@ -115,13 +144,15 @@ class AddonService extends \think\Service
                 if (!$v) {
                     continue;
                 }
-                $parts = explode('/', (string)$v);
+
+                $parts = explode('/', (string) $v);
                 if (count($parts) !== 3) {
                     continue;
                 }
+
                 [$addon, $controller, $action] = $parts;
                 Route::rule($k, $execute)
-                    ->middleware([CommonInit::class, \think\middleware\LoadLangPack::class])
+                    ->middleware($middlewares)
                     ->name($k)
                     ->completeMatch(true)
                     ->append(['addon' => $addon, 'controller' => $controller, 'action' => $action]);
@@ -136,6 +167,11 @@ class AddonService extends \think\Service
      */
     public function boot()
     {
+        // 路由注册
+        $this->registerRoutes(function () {
+            $this->addon_route();
+        });
+
         // 注册插件管理命令
         $this->commands([
             AddonCommand::class,
