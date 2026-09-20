@@ -5,10 +5,9 @@ declare(strict_types=1);
 use think\facade\Event;
 use think\facade\App;
 use think\facade\Config;
-use Symfony\Component\VarExporter\VarExporter;
+use think\helper\Str;
+use creatcode\easyaddons\addons\support\File;
 
-
-// 插件类库自动载入
 // 插件类库自动载入
 spl_autoload_register(function ($class) {
     $class = ltrim($class, '\\');
@@ -30,23 +29,62 @@ spl_autoload_register(function ($class) {
     return false;
 });
 
+// FastAdmin 旧版命名空间兼容别名
+(static function () {
+    $aliases = [
+        \creatcode\easyaddons\Addons::class                => 'think\\Addons',
+        \creatcode\easyaddons\addons\Service::class        => 'think\\addons\\Service',
+        \creatcode\easyaddons\addons\Controller::class     => 'think\\addons\\Controller',
+        \creatcode\easyaddons\addons\AddonException::class => 'think\\addons\\AddonException',
+        \creatcode\easyaddons\addons\Route::class          => 'think\\addons\\Route',
+    ];
+
+    foreach ($aliases as $class => $alias) {
+        try {
+            if (!class_exists($alias, false) && class_exists($class)) {
+                class_alias($class, $alias);
+            }
+        } catch (\Throwable $e) {
+            // 宿主缺少依赖时跳过
+        }
+    }
+})();
+
 if (!function_exists('hook')) {
     /**
-     * 处理插件钩子
+     * 处理插件钩子（插件专属）
+     *
+     * FastAdmin 插件的钩子方法普遍使用引用参数（configInit(&$params)、
+     * viewFilter(&$content)）修改传入数据，因此这里以引用方式直接调用
+     * 插件钩子方法。宿主侧请使用 Event::trigger()，不要调用本函数。
+     *
      * @param string $event 钩子名称
-     * @param array|null $params 传入参数
-     * @param bool $once 是否只返回一个结果
-     * @return mixed
+     * @param mixed $params 传入参数（引用传递）
+     * @param bool $once 是否只取第一个非空结果
+     * @return mixed 最后一个非空结果
      */
-    function hook($event, $params = null, bool $once = false)
+    function hook($event, &$params = null, bool $once = false)
     {
-        $result = Event::trigger($event, $params, $once);
+        $result = null;
 
-        if ($once) {
-            return $result;
+        $hooks = (array) Config::get('addons.hooks', []);
+        $method = Str::camel($event);
+        foreach ((array) ($hooks[$event] ?? []) as $name) {
+            $class = get_addon_class($name);
+            if (!$class || !method_exists($class, $method)) {
+                continue;
+            }
+
+            $ret = call_user_func_array([app($class), $method], [&$params]);
+            if ($ret !== null) {
+                $result = $ret;
+                if ($once) {
+                    break;
+                }
+            }
         }
 
-        return is_array($result) ? implode('', $result) : $result;
+        return $result;
     }
 }
 
@@ -178,7 +216,19 @@ if (!function_exists('get_addon_autoload_config')) {
         $url_domain_deploy = true;
         $addons = get_addon_list();
         $domain = [];
-        foreach ($addons as $name => $addon) {
+
+        // 按 priority 配置排序，未列入的按目录顺序追加
+        $priority = isset($config['priority']) && $config['priority']
+            ? (is_array($config['priority']) ? $config['priority'] : explode(',', $config['priority']))
+            : [];
+        $ordered = [];
+        foreach (array_merge($priority, array_keys($addons)) as $key) {
+            if (isset($addons[$key])) {
+                $ordered[$key] = $addons[$key];
+            }
+        }
+
+        foreach ($ordered as $name => $addon) {
             if (!$addon['state']) {
                 continue;
             }
@@ -414,6 +464,10 @@ if (!function_exists('addon_url')) {
         }
         $val = "@addons/{$url}";
         $config = get_addon_config($addon);
+        $indomain = request()->param('indomain') && request()->param('addon') == $addon;
+        // 优先取插件配置的 domain，其次取全局域名前缀配置
+        $domainprefix = $config && !empty($config['domain']) ? $config['domain'] : Config::get('addons.domain');
+        $domain = $domainprefix ?: $domain;
 
         $rewrite = $config && isset($config['rewrite']) && $config['rewrite'] ? $config['rewrite'] : [];
 
@@ -428,19 +482,15 @@ if (!function_exists('addon_url')) {
                 if (substr($val, -1) === '/') {
                     $suffix = false;
                 }
-            } else {
-                // 如果采用了域名部署,则需要去掉前两段
-                /*if ($indomain && $domainprefix) {
-                $arr = explode("/", $val);
-                $val = implode("/", array_slice($arr, 2));
-            }*/
+            } elseif ($indomain && $domainprefix) {
+                // 域名部署下去掉前两段
+                $val = implode('/', array_slice(explode('/', $val), 2));
             }
         } else {
-            // 如果采用了域名部署,则需要去掉前两段
-            /*if ($indomain && $domainprefix) {
-            $arr = explode("/", $val);
-            $val = implode("/", array_slice($arr, 2));
-        }*/
+            if ($indomain && $domainprefix) {
+                // 域名部署下去掉前两段
+                $val = implode('/', array_slice(explode('/', $val), 2));
+            }
             foreach ($params as $k => $v) {
                 $vars[substr($k, 1)] = $v;
             }
@@ -462,8 +512,16 @@ if (!function_exists('set_addon_info')) {
      */
     function set_addon_info($name, $array)
     {
+        if (!is_string($name) || !preg_match('/^[a-zA-Z0-9]+$/', $name)) {
+            throw new Exception('插件名称不正确');
+        }
+
         $file = ADDON_PATH . $name . DIRECTORY_SEPARATOR . 'info.ini';
         $addon = get_addon_instance($name);
+        if (!$addon) {
+            throw new Exception('插件不存在');
+        }
+
         $array = $addon->setInfo($name, $array);
 
         if (!isset($array['name']) || !isset($array['title']) || !isset($array['version'])) {
@@ -494,6 +552,7 @@ if (!function_exists('set_addon_info')) {
             }
         }
 
+        Event::trigger($name . '_info_before_write', $array);
         if ($handle = fopen($file, 'w')) {
             fwrite($handle, implode("\n", $res) . "\n");
             fclose($handle);
@@ -547,8 +606,15 @@ if (!function_exists('set_addon_fullconfig')) {
      */
     function set_addon_fullconfig($name, $array)
     {
+        $config = [];
+        foreach ((array) $array as $value) {
+            if (isset($value['name'])) {
+                $config[$value['name']] = $value['value'] ?? null;
+            }
+        }
+        Event::trigger($name . '_config_before_write', ['config' => $config, 'fullconfig' => $array]);
         $file = ADDON_PATH . $name . DIRECTORY_SEPARATOR . 'config.php';
-        $ret = file_put_contents($file, "<?php\n\n" . "return " . VarExporter::export($array) . ";\n", LOCK_EX);
+        $ret = file_put_contents($file, "<?php\n\n" . "return " . File::export($array) . ";\n", LOCK_EX);
         if (!$ret) {
             throw new Exception("配置写入失败");
         }

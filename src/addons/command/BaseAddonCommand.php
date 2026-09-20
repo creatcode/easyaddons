@@ -4,6 +4,7 @@ namespace creatcode\easyaddons\addons\command;
 
 use creatcode\easyaddons\addons\AddonException;
 use creatcode\easyaddons\addons\Service;
+use creatcode\easyaddons\addons\support\File;
 use think\Exception;
 use think\console\Command;
 use think\console\Input;
@@ -73,7 +74,7 @@ abstract class BaseAddonCommand extends Command
                 }
                 // 如果目录存在则先移除
                 if (is_dir($addonDir)) {
-                    rmdirs($addonDir);
+                    File::rmdirs($addonDir);
                 }
                 mkdir($addonDir, 0755, true);
                 mkdir($addonDir . DIRECTORY_SEPARATOR . 'controller', 0755, true);
@@ -95,7 +96,7 @@ abstract class BaseAddonCommand extends Command
                     'name'               => $name,
                     'addon'              => $name,
                     'addonClassName'     => ucfirst($name),
-                    'addonInstallMenu'   => $createMenu ? "\$menu = " . var_export_short($createMenu) . ";\n\tMenu::create(\$menu);" : '',
+                    'addonInstallMenu'   => $createMenu ? "\$menu = " . File::export($createMenu) . ";\n\tMenu::create(\$menu);" : '',
                     'addonUninstallMenu' => $menuList ? 'Menu::delete("' . $name . '");' : '',
                     'addonEnableMenu'    => $menuList ? 'Menu::enable("' . $name . '");' : '',
                     'addonDisableMenu'   => $menuList ? 'Menu::disable("' . $name . '");' : '',
@@ -273,9 +274,9 @@ abstract class BaseAddonCommand extends Command
                     if (is_dir($oldPath)) {
                         if ($force && is_dir($newPath)) {
                             // 强制模式下先清理旧的插件目标目录
-                            rmdirs($newPath);
+                            File::rmdirs($newPath);
                         }
-                        copydirs($oldPath, $newPath);
+                        File::copydirs($oldPath, $newPath);
                     }
                 }
                 break;

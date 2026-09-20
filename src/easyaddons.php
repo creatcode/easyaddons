@@ -11,5 +11,5 @@ return [
     // 是否启用插件授权校验
     'addon_auth_check'    => false,
     // 是否校验插件市场 HTTPS 证书
-    'ssl_verify' => true,
+    'ssl_verify'          => true,
 ];

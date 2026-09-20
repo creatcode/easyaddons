@@ -80,15 +80,28 @@ class Controller extends BaseController
 
     protected function initialize()
     {
+        // 检测IP是否允许
+        if (function_exists('check_ip_allowed')) {
+            check_ip_allowed();
+        }
+
         // 渲染配置到视图中
         $config = get_addon_config($this->addon);
         $this->view->config(['view_path' => ADDON_PATH . $this->addon . DIRECTORY_SEPARATOR . 'view' . DIRECTORY_SEPARATOR]);
         $this->view->assign('config', $config);
 
         // 加载系统语言包
+        $lang = (string) Lang::getLangset();
+        $lang = preg_match('/^([a-zA-Z\-_]{2,10})$/i', $lang) ? $lang : 'zh-cn';
         Lang::load([
-            ADDON_PATH . $this->addon . DIRECTORY_SEPARATOR . 'lang' . DIRECTORY_SEPARATOR . Lang::getLangset() . '.php',
+            ADDON_PATH . $this->addon . DIRECTORY_SEPARATOR . 'lang' . DIRECTORY_SEPARATOR . $lang . '.php',
         ]);
+
+        // 插件资源路径
+        $cdnurl = Config::get('site.cdnurl');
+        $replace = (array) Config::get('view.tpl_replace_string', []);
+        $replace['__ADDON__'] = $cdnurl . '/assets/addons/' . $this->addon;
+        $this->view->config(['tpl_replace_string' => $replace]);
 
         $this->auth = Auth::instance();
         // token
@@ -178,5 +191,25 @@ class Controller extends BaseController
     protected function assign($name, $value = '')
     {
         $this->view->assign($name, $value);
+    }
+
+    /**
+     * 校验并刷新表单 Token
+     *
+     * 兼容 FastAdmin 插件控制器的 $this->token() 调用方式。
+     *
+     * @return void
+     */
+    protected function token()
+    {
+        $token = (string) $this->request->param('__token__');
+
+        // 验证Token
+        if (!$this->request->checkToken('__token__', ['__token__' => $token])) {
+            $this->error(__('Token verification error'), '', ['__token__' => $this->request->buildToken()]);
+        }
+
+        // 刷新Token
+        $this->request->buildToken();
     }
 }

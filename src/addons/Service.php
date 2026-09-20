@@ -8,8 +8,8 @@ use PhpZip\Exception\ZipException;
 use PhpZip\ZipFile;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
-use Symfony\Component\VarExporter\VarExporter;
 use creatcode\easyaddons\addons\AddonException;
+use creatcode\easyaddons\addons\support\File;
 use think\Exception;
 use think\facade\Cache;
 use think\facade\Db;
@@ -20,6 +20,26 @@ use think\facade\Db;
  */
 class Service
 {
+    /**
+     * 单个插件压缩包最多包含的条目数。
+     */
+    private const MAX_ZIP_ENTRIES = 1000;
+
+    /**
+     * 单个文件解压后的最大字节数（64 MiB）。
+     */
+    private const MAX_ZIP_ENTRY_SIZE = 67108864;
+
+    /**
+     * 单个压缩包解压后的最大总字节数（512 MiB）。
+     */
+    private const MAX_ZIP_TOTAL_SIZE = 536870912;
+
+    /**
+     * 单个文件允许的最大压缩比，防止高压缩比压缩炸弹。
+     */
+    private const MAX_ZIP_COMPRESSION_RATIO = 100;
+
     /**
      * 获取插件框架配置，优先读取独立配置，兼容旧的 rocket 配置。
      *
@@ -52,11 +72,35 @@ class Service
      * @param string $default
      * @return string
      */
+    /**
+     * 获取插件市场接口地址
+     *
+     * 市场地址属于部署配置，由宿主提供，包内不定义、不猜测。
+     * 读取宿主的 rocket.addon_market_api_url。
+     *
+     * @param string $default
+     * @return string
+     */
     public static function marketApiUrl($default = '')
     {
         $value = config('rocket.addon_market_api_url');
 
-        return is_null($value) ? $default : trim((string)$value);
+        return is_null($value) ? $default : trim((string) $value);
+    }
+
+    /**
+     * 获取数据库版本
+     *
+     * @return string
+     */
+    public static function mysqlVersion()
+    {
+        try {
+            $result = Db::query('SELECT version() AS version');
+            return $result[0]['version'] ?? '';
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     /**
@@ -262,8 +306,10 @@ class Service
             // 追加MD5和Data数据
             $extend['md5'] = md5_file($tmpFile);
             $extend['data'] = $zip->getArchiveComment();
-            $extend['unknownsources'] = config('app.app_debug') && self::addonConfig('unknownsources', false);
+            $extend['unknownsources'] = config('app.app_debug') && self::addonConfig('unknownsources', true);
             $extend['faversion'] = self::systemVersion();
+            $extend['phpversion'] = PHP_VERSION;
+            $extend['mysqlversion'] = self::mysqlVersion();
 
             $params = array_merge($config, $extend);
 
@@ -359,6 +405,10 @@ class Service
         $addon = new $addonClass();
         if (!$addon->checkInfo()) {
             throw new Exception("The configuration file content is incorrect");
+        }
+        // 检测插件运行环境
+        if (method_exists($addon, 'checkEnv')) {
+            $addon->checkEnv();
         }
         return true;
     }
@@ -464,11 +514,11 @@ EOD;
             @mkdir($dir, 0755, true);
         }
 
-        if ((is_file($file) && !is_really_writable($file)) || (!is_file($file) && !is_really_writable($dir))) {
+        if ((is_file($file) && !File::isReallyWritable($file)) || (!is_file($file) && !File::isReallyWritable($dir))) {
             throw new Exception(__("Unable to open file '%s' for writing", "addons.php"));
         }
 
-        if (file_put_contents($file, "<?php\n\n" . "return " . VarExporter::export($config) . ";\n", LOCK_EX) === false) {
+        if (file_put_contents($file, "<?php\n\n" . "return " . File::export($config) . ";\n", LOCK_EX) === false) {
             throw new Exception(__("Unable to open file '%s' for writing", "addons.php"));
         }
         return true;
@@ -493,6 +543,8 @@ EOD;
         }
 
         $extend['domain'] = request()->host(true);
+        $extend['phpversion'] = PHP_VERSION;
+        $extend['mysqlversion'] = self::mysqlVersion();
 
         // 远程下载插件
         $tmpFile = $tmpFile ?: self::download($name, $extend);
@@ -511,10 +563,10 @@ EOD;
                 self::noconflict($name);
             }
         } catch (AddonException $e) {
-            @rmdirs($addonDir);
+            @File::rmdirs($addonDir);
             throw new AddonException($e->getMessage(), $e->getCode(), $e->getData());
         } catch (Exception $e) {
-            @rmdirs($addonDir);
+            @File::rmdirs($addonDir);
             throw new Exception($e->getMessage());
         } finally {
             // 移除临时文件
@@ -543,7 +595,7 @@ EOD;
             Db::commit();
         } catch (Exception $e) {
             Db::rollback();
-            @rmdirs($addonDir);
+            @File::rmdirs($addonDir);
             throw new Exception($e->getMessage());
         }
 
@@ -551,7 +603,7 @@ EOD;
             // 启用插件
             self::enable($name, true);
         } catch (\Throwable $e) {
-            @rmdirs($addonDir);
+            @File::rmdirs($addonDir);
             throw new Exception($e->getMessage());
         }
 
@@ -584,8 +636,23 @@ EOD;
         // 移除插件全局资源文件
         if ($force) {
             $list = self::getGlobalFiles($name);
-            foreach ($list as $k => $v) {
-                @unlink(app()->getRootPath() . $v);
+            // 纯净模式下插件目录的 application/public 已被删除，回退到 .addonrc 记录
+            if (!$list) {
+                $config = self::config($name);
+                $list = is_array($config['files'] ?? null) ? $config['files'] : [];
+            }
+
+            $dirs = [];
+            foreach ($list as $v) {
+                $v = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $v);
+                $file = app()->getRootPath() . $v;
+                $dirs[] = dirname($file);
+                @unlink($file);
+            }
+
+            // 移除空目录
+            foreach (array_filter(array_unique($dirs)) as $dir) {
+                remove_empty_folder($dir);
             }
         }
 
@@ -601,7 +668,7 @@ EOD;
         }
 
         // 移除插件目录
-        rmdirs(self::getAddonDir($name));
+        File::rmdirs(self::getAddonDir($name));
 
         // 刷新
         self::refresh();
@@ -659,22 +726,22 @@ EOD;
 
         // 复制文件
         if (is_dir($sourceAssetsDir)) {
-            copydirs($sourceAssetsDir, $destAssetsDir);
+            File::copydirs($sourceAssetsDir, $destAssetsDir);
         }
 
         // 复制application和public到全局
         foreach (self::getCheckDirs() as $k => $dir) {
             if (is_dir($addonDir . $k)) {
-                copydirs($addonDir . $k, app()->getRootPath() . $dir);
+                File::copydirs($addonDir . $k, app()->getRootPath() . $dir);
             }
         }
 
         //插件纯净模式时将插件目录下的application、public和assets删除
-        if (self::addonConfig('addon_pure_mode', false)) {
+        if (self::addonConfig('addon_pure_mode', true)) {
             // 删除插件目录已复制到全局的文件
-            @rmdirs($sourceAssetsDir);
+            @File::rmdirs($sourceAssetsDir);
             foreach (self::getCheckDirs() as $k => $dir) {
-                @rmdirs($addonDir . $k);
+                @File::rmdirs($addonDir . $k);
             }
         }
 
@@ -723,7 +790,7 @@ EOD;
             @mkdir($dir, 0755, true);
         }
 
-        if ((is_file($file) && !is_really_writable($file)) || (!is_file($file) && !is_really_writable($dir))) {
+        if ((is_file($file) && !File::isReallyWritable($file)) || (!is_file($file) && !File::isReallyWritable($dir))) {
             throw new Exception(__("Unable to open file '%s' for writing", "addons.php"));
         }
 
@@ -761,7 +828,7 @@ EOD;
 
         //插件纯净模式时将原有的文件复制回插件目录
         //当无法获取全局文件列表时也将列表复制回插件目录
-        if (self::addonConfig('addon_pure_mode', false) || !$list) {
+        if (self::addonConfig('addon_pure_mode', true) || !$list) {
             if ($config && isset($config['files']) && is_array($config['files'])) {
                 foreach ($config['files'] as $index => $item) {
                     //避免切换不同服务器后导致路径不一致
@@ -786,7 +853,7 @@ EOD;
 
             //复制插件目录资源
             if (is_dir($destAssetsDir)) {
-                @copydirs($destAssetsDir, $addonDir . 'assets' . DIRECTORY_SEPARATOR);
+                @File::copydirs($destAssetsDir, $addonDir . 'assets' . DIRECTORY_SEPARATOR);
             }
         }
 
@@ -859,7 +926,7 @@ EOD;
         // 删除插件目录下的application和public
         $files = self::getCheckDirs();
         foreach ($files as $index => $file) {
-            @rmdirs($addonDir . $index);
+            @File::rmdirs($addonDir . $index);
         }
 
         try {
@@ -908,7 +975,7 @@ EOD;
             }
 
             $className = "\\addons\\" . $name . "\\" . $addonName . "Upgrade";
-            $addon = new $className();
+            $addon = new $className($name);
 
             if (method_exists($addon, "upgrade")) {
                 $addon->upgrade();
@@ -966,7 +1033,13 @@ EOD;
      */
     protected static function assertSafeZipEntries(ZipFile $zip)
     {
-        foreach ($zip->getListFiles() as $entryName) {
+        $entryNames = $zip->getListFiles();
+        if (count($entryNames) > self::MAX_ZIP_ENTRIES) {
+            throw new Exception('Addon package contains too many files');
+        }
+
+        $totalSize = 0;
+        foreach ($entryNames as $entryName) {
             $entryName = str_replace('\\', '/', (string)$entryName);
             if (
                 $entryName === '' ||
@@ -974,6 +1047,26 @@ EOD;
                 preg_match('#(^|/)\.\.(/|$)#', $entryName)
             ) {
                 throw new Exception('Invalid addon package');
+            }
+
+            $entry = $zip->getEntry($entryName);
+            if ($entry->isUnixSymlink()) {
+                throw new Exception('Addon package contains symbolic link');
+            }
+
+            $entrySize = $entry->getUncompressedSize();
+            $compressedSize = $entry->getCompressedSize();
+            if ($entrySize < 0 || $compressedSize < 0 || $entrySize > self::MAX_ZIP_ENTRY_SIZE) {
+                throw new Exception('Addon package file is too large');
+            }
+
+            $totalSize += $entrySize;
+            if ($totalSize > self::MAX_ZIP_TOTAL_SIZE) {
+                throw new Exception('Addon package is too large after extraction');
+            }
+
+            if ($entrySize > 0 && ($compressedSize === 0 || $entrySize / $compressedSize > self::MAX_ZIP_COMPRESSION_RATIO)) {
+                throw new Exception('Addon package compression ratio is too high');
             }
         }
     }
@@ -1279,7 +1372,7 @@ EOD;
             'base_uri'        => self::getServerUrl(),
             'timeout'         => 30,
             'connect_timeout' => 30,
-            'verify'          => self::addonConfig('ssl_verify', false),
+            'verify'          => self::addonConfig('ssl_verify', true),
             'http_errors'     => false,
             'headers'         => [
                 'X-REQUESTED-WITH' => 'XMLHttpRequest',

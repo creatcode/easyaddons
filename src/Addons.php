@@ -20,6 +20,10 @@ abstract class Addons
     protected $error;
     // 插件目录
     public $addons_path = '';
+    // 插件目录（旧版属性名）
+    public $addonPath = '';
+    // 插件标识
+    protected $addonName = '';
     // 插件配置作用域
     protected $configRange = 'addonconfig';
     // 插件信息作用域
@@ -27,21 +31,28 @@ abstract class Addons
 
     /**
      * 架构函数.
+     *
+     * @param string|null $name 插件标识，缺省时由类名推导
      */
-    public function __construct()
+    public function __construct($name = null)
     {
-        $name = $this->getName();
+        $name = is_null($name) ? $this->getName() : $name;
+        $this->addonName = $name;
         // 获取当前插件目录
         $this->addons_path = ADDON_PATH . $name . DIRECTORY_SEPARATOR;
+        $this->addonPath = $this->addons_path;
 
         // 初始化视图模型
         $config = ['view_path' => $this->addons_path . 'view' . DIRECTORY_SEPARATOR];
         $config = array_merge(Config::get('view'), $config);
         $this->view = View::instance($config);
 
-        // 控制器初始化
-        if (method_exists($this, 'initialize')) {
-            $this->initialize();
+        // 控制器初始化（兼容 FastAdmin 旧版 _initialize 写法）
+        foreach (['initialize', '_initialize'] as $method) {
+            if (method_exists($this, $method)) {
+                $this->$method();
+                break;
+            }
         }
     }
 
@@ -174,9 +185,31 @@ abstract class Addons
      */
     final public function getName()
     {
+        if ($this->addonName) {
+            return $this->addonName;
+        }
         $data = explode('\\', get_class($this));
 
         return strtolower(array_pop($data));
+    }
+
+    /**
+     * 设置插件标识.
+     *
+     * @param string $name
+     */
+    final public function setName($name)
+    {
+        $this->addonName = $name;
+    }
+
+    /**
+     * 检测插件运行环境
+     *
+     * @return void
+     */
+    public function checkEnv()
+    {
     }
 
     /**

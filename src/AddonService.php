@@ -6,6 +6,7 @@ namespace creatcode\easyaddons;
 
 use creatcode\easyaddons\addons\command\AddonCommand;
 use creatcode\easyaddons\addons\command\TenantAddonCommand;
+use RuntimeException;
 use think\facade\Cache;
 use think\facade\Config;
 use think\facade\Event;
@@ -29,11 +30,37 @@ class AddonService extends \think\Service
         // 插件目录
         !defined('ADDON_PATH') && define('ADDON_PATH', app()->getRootPath() . 'addons' . DIRECTORY_SEPARATOR);
         // 如果插件目录不存在则创建
-        if (!is_dir(ADDON_PATH)) {
-            @mkdir(ADDON_PATH, 0755, true);
+        if (!is_dir(ADDON_PATH) && !@mkdir(ADDON_PATH, 0755, true) && !is_dir(ADDON_PATH)) {
+            throw new RuntimeException('插件目录创建失败：' . ADDON_PATH);
         }
+        // TP5 兼容常量
+        $this->defineLegacyConstants();
         //注册插件事件
         $this->addon_event();
+    }
+
+    /**
+     * 定义 FastAdmin 插件常用的 TP5 常量
+     *
+     * 插件代码（市场下载、不可修改）常用 ROOT_PATH、DS、EXT 等常量，
+     * 而 TP6+ 项目不定义这些，需由插件包补齐。
+     *
+     * @return void
+     */
+    private function defineLegacyConstants()
+    {
+        $constants = [
+            'DS'           => DIRECTORY_SEPARATOR,
+            'EXT'          => '.php',
+            'ROOT_PATH'    => app()->getRootPath(),
+            'APP_PATH'     => app()->getAppPath(),
+            'CONF_PATH'    => app()->getConfigPath(),
+            'RUNTIME_PATH' => app()->getRuntimePath(),
+        ];
+
+        foreach ($constants as $name => $value) {
+            defined($name) || define($name, $value);
+        }
     }
 
     /**
@@ -48,13 +75,7 @@ class AddonService extends \think\Service
 
             // 初始化插件钩子监听
             foreach ($hooks as $key => $values) {
-                $values = is_string($values) ? explode(',', $values) : (array) $values;
-
-                $hooks[$key] = array_values(array_filter(array_map(function ($addon) use ($key) {
-                    $class = get_addon_class($addon);
-
-                    return $class ? [$class, Str::camel($key)] : null;
-                }, $values)));
+                $hooks[$key] = $this->normalizeHookValues($values);
             }
 
             Cache::set('hooks', $hooks);
@@ -64,12 +85,60 @@ class AddonService extends \think\Service
             return;
         }
 
-        // 先注册监听，再按需触发初始化事件
-        Event::listenEvents($hooks);
+        // 每个事件只注册一个聚合监听器，按配置顺序依次执行插件钩子。
+        // TP6+ 的 Container::invoke() 无法回传引用修改，而 FastAdmin 插件的钩子
+        // 普遍使用 &$params / &$content 修改传入数据。聚合后只返回一次最终结果，
+        // 使宿主使用 Event::trigger(..., true) 时不会跳过同一事件的后续插件。
+        foreach ($hooks as $event => $names) {
+            $method = Str::camel($event);
+            $listeners = [];
+
+            foreach ((array) $names as $name) {
+                $class = get_addon_class($name);
+                if (!$class || !method_exists($class, $method)) {
+                    continue;
+                }
+
+                $listeners[] = [$class, $method];
+            }
+
+            if (!$listeners) {
+                continue;
+            }
+
+            Event::listen($event, function ($params = null) use ($listeners) {
+                foreach ($listeners as [$class, $method]) {
+                    $args = [&$params];
+                    call_user_func_array([app($class), $method], $args);
+                }
+
+                return $params;
+            });
+        }
 
         if (isset($hooks['app_init'])) {
             Event::trigger('app_init', app());
         }
+    }
+
+    /**
+     * 规范化插件钩子配置
+     *
+     * @param mixed $values
+     * @return array
+     */
+    private function normalizeHookValues($values): array
+    {
+        $values = is_string($values) ? explode(',', $values) : (array) $values;
+        $values = array_map(function ($value) {
+            if (is_array($value)) {
+                return '';
+            }
+
+            return trim((string) $value);
+        }, $values);
+
+        return array_values(array_unique(array_filter($values)));
     }
 
 
