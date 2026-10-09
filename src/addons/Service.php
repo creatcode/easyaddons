@@ -462,6 +462,9 @@ class Service
         $sqlFile = self::getAddonDir($name) . $fileName;
         if (is_file($sqlFile)) {
             $prefix = get_addon_database_config('prefix', '');
+            //惰性连接下 getPdo() 未连接时返回 false，先查一次确保连接已建立
+            Db::query('SELECT 1');
+            $pdo = Db::getPdo();
 
             $lines = file($sqlFile);
             if ($lines === false) {
@@ -472,12 +475,12 @@ class Service
              * @param string $sql SQL 语句
              * @return void
              */
-            $execute = static function ($sql) use ($prefix) {
+            $execute = static function ($sql) use ($prefix, $pdo) {
                 $sql = str_ireplace('__PREFIX__', (string) $prefix, $sql);
                 $sql = preg_replace('/^(\s*)INSERT\s+INTO\b/i', '$1INSERT IGNORE INTO', $sql);
                 try {
-                    //惰性连接下 getPdo() 未连接时返回 false，须用 execute() 由框架自动建连接
-                    Db::execute($sql);
+                    //用 PDO::exec() 执行：Db::execute() 会留下未关闭游标，导致后续语句报 2014
+                    $pdo->exec($sql);
                 } catch (\Throwable $e) {
                     throw new Exception('SQL导入失败：' . $e->getMessage(), 0, $e);
                 }
